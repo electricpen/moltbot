@@ -286,7 +286,7 @@ export interface InjectionScanConfig {
 const DEFAULT_LLM_SCAN_CONFIG: LlmScanConfig = {
   enabled: false,
   provider: "openai",
-  model: "gpt-4o-mini",
+  model: "gpt-5-mini",
   confidenceThreshold: 0.7,
   timeoutMs: 10000,
 };
