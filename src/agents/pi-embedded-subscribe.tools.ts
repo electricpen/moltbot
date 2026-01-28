@@ -2,6 +2,7 @@ import { getChannelPlugin, normalizeChannelId } from "../channels/plugins/index.
 import { truncateUtf16Safe } from "../utils.js";
 import { type MessagingToolSend } from "./pi-embedded-messaging.js";
 import { normalizeTargetForProvider } from "../infra/outbound/target-normalization.js";
+import type { InjectionScanConfig as ConfigInjectionScanConfig } from "../config/types.tools.js";
 
 const TOOL_RESULT_MAX_CHARS = 8000;
 const TOOL_ERROR_MAX_CHARS = 400;
@@ -278,6 +279,22 @@ let injectionConfig: InjectionScanConfig = { ...DEFAULT_INJECTION_CONFIG };
  */
 export function configureInjectionScanning(config: Partial<InjectionScanConfig>): void {
   injectionConfig = { ...injectionConfig, ...config };
+}
+
+/**
+ * Initializes injection scanning configuration from Clawdbot config.
+ * Called during gateway startup.
+ */
+export function initInjectionScanFromConfig(configInjectionScan?: ConfigInjectionScanConfig): void {
+  if (!configInjectionScan) return;
+
+  configureInjectionScanning({
+    enabled: configInjectionScan.enabled ?? DEFAULT_INJECTION_CONFIG.enabled,
+    minSeverity: configInjectionScan.minSeverity ?? DEFAULT_INJECTION_CONFIG.minSeverity,
+    action: configInjectionScan.action ?? DEFAULT_INJECTION_CONFIG.action,
+    quarantineDir: configInjectionScan.quarantineDir ?? DEFAULT_INJECTION_CONFIG.quarantineDir,
+    logDetections: configInjectionScan.logDetections ?? DEFAULT_INJECTION_CONFIG.logDetections,
+  });
 }
 
 /**

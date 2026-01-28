@@ -221,6 +221,28 @@ export type AgentToolsConfig = {
   };
 };
 
+export type InjectionScanAction = "warn" | "strip" | "block";
+export type InjectionScanSeverity = "high" | "medium" | "low";
+
+export type InjectionScanConfig = {
+  /** Enable injection scanning on tool results (default: true). */
+  enabled?: boolean;
+  /** Minimum severity to trigger action (default: "medium"). */
+  minSeverity?: InjectionScanSeverity;
+  /**
+   * Action to take when injection detected:
+   * - "warn": Add warning but keep content (less secure)
+   * - "strip": Remove content and save to quarantine file (recommended)
+   * - "block": Remove content without saving
+   * Default: "strip"
+   */
+  action?: InjectionScanAction;
+  /** Directory to write quarantined content (default: ".clawdbot/quarantine"). */
+  quarantineDir?: string;
+  /** Log detected injections to console (default: true). */
+  logDetections?: boolean;
+};
+
 export type MemorySearchConfig = {
   /** Enable vector memory search (default: true). */
   enabled?: boolean;
@@ -445,4 +467,6 @@ export type ToolsConfig = {
       deny?: string[];
     };
   };
+  /** Prompt injection scanning configuration for tool results. */
+  injectionScan?: InjectionScanConfig;
 };

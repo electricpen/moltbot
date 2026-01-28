@@ -162,6 +162,17 @@ export const ToolPolicySchema = ToolPolicyBaseSchema.superRefine((value, ctx) =>
   }
 }).optional();
 
+export const InjectionScanSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    minSeverity: z.enum(["high", "medium", "low"]).optional(),
+    action: z.enum(["warn", "strip", "block"]).optional(),
+    quarantineDir: z.string().optional(),
+    logDetections: z.boolean().optional(),
+  })
+  .strict()
+  .optional();
+
 export const ToolsWebSearchSchema = z
   .object({
     enabled: z.boolean().optional(),
@@ -533,6 +544,7 @@ export const ToolsSchema = z
       })
       .strict()
       .optional(),
+    injectionScan: InjectionScanSchema,
   })
   .strict()
   .superRefine((value, ctx) => {
