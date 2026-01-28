@@ -10,6 +10,7 @@ import {
   extractMessagingToolSend,
   isToolResultError,
   sanitizeToolResult,
+  sanitizeToolResultAsync,
 } from "./pi-embedded-subscribe.tools.js";
 import { inferToolMetaFromArgs } from "./pi-embedded-utils.js";
 import { normalizeToolName } from "./tool-policy.js";
@@ -136,7 +137,7 @@ export function handleToolExecutionUpdate(
   });
 }
 
-export function handleToolExecutionEnd(
+export async function handleToolExecutionEnd(
   ctx: EmbeddedPiSubscribeContext,
   evt: AgentEvent & {
     toolName: string;
@@ -150,7 +151,8 @@ export function handleToolExecutionEnd(
   const isError = Boolean(evt.isError);
   const result = evt.result;
   const isToolError = isError || isToolResultError(result);
-  const sanitizedResult = sanitizeToolResult(result);
+  // Use async sanitization for final results (supports LLM scanning)
+  const sanitizedResult = await sanitizeToolResultAsync(result);
   const meta = ctx.state.toolMetaById.get(toolCallId);
   ctx.state.toolMetas.push({ toolName, meta });
   ctx.state.toolMetaById.delete(toolCallId);

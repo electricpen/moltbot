@@ -223,6 +223,22 @@ export type AgentToolsConfig = {
 
 export type InjectionScanAction = "warn" | "strip" | "block";
 export type InjectionScanSeverity = "high" | "medium" | "low";
+export type LlmScanProvider = "google" | "openai" | "anthropic";
+
+export type LlmScanConfig = {
+  /** Enable LLM-based scanning for content that passes regex (default: false). */
+  enabled?: boolean;
+  /** Provider: "google" (Gemini), "openai", or "anthropic" (default: "google"). */
+  provider?: LlmScanProvider;
+  /** Model to use (default: "gemini-2.0-flash"). */
+  model?: string;
+  /** API key (or use env var GEMINI_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY). */
+  apiKey?: string;
+  /** Confidence threshold to flag as injection, 0.0-1.0 (default: 0.7). */
+  confidenceThreshold?: number;
+  /** Timeout in ms for LLM requests (default: 10000). */
+  timeoutMs?: number;
+};
 
 export type InjectionScanConfig = {
   /** Enable injection scanning on tool results (default: true). */
@@ -241,6 +257,8 @@ export type InjectionScanConfig = {
   quarantineDir?: string;
   /** Log detected injections to console (default: true). */
   logDetections?: boolean;
+  /** LLM-based scanning as second layer after regex (default: disabled). */
+  llmScan?: LlmScanConfig;
 };
 
 export type MemorySearchConfig = {

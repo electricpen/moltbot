@@ -162,6 +162,18 @@ export const ToolPolicySchema = ToolPolicyBaseSchema.superRefine((value, ctx) =>
   }
 }).optional();
 
+export const LlmScanSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    provider: z.enum(["google", "openai", "anthropic"]).optional(),
+    model: z.string().optional(),
+    apiKey: z.string().optional(),
+    confidenceThreshold: z.number().min(0).max(1).optional(),
+    timeoutMs: z.number().int().positive().optional(),
+  })
+  .strict()
+  .optional();
+
 export const InjectionScanSchema = z
   .object({
     enabled: z.boolean().optional(),
@@ -169,6 +181,7 @@ export const InjectionScanSchema = z
     action: z.enum(["warn", "strip", "block"]).optional(),
     quarantineDir: z.string().optional(),
     logDetections: z.boolean().optional(),
+    llmScan: LlmScanSchema,
   })
   .strict()
   .optional();
