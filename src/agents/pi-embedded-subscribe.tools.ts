@@ -285,8 +285,8 @@ export interface InjectionScanConfig {
 
 const DEFAULT_LLM_SCAN_CONFIG: LlmScanConfig = {
   enabled: false,
-  provider: "google",
-  model: "gemini-2.0-flash",
+  provider: "openai",
+  model: "gpt-4o-mini",
   confidenceThreshold: 0.7,
   timeoutMs: 10000,
 };
