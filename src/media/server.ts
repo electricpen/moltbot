@@ -6,6 +6,7 @@ import { defaultRuntime, type RuntimeEnv } from "../runtime.js";
 import { SafeOpenError, openFileWithinRoot } from "../infra/fs-safe.js";
 import { detectMime } from "./mime.js";
 import { cleanOldMedia, getMediaDir, MEDIA_MAX_BYTES } from "./store.js";
+import { attachInjectionScanRoutes } from "../agents/injection-scan-routes.js";
 
 const DEFAULT_TTL_MS = 2 * 60 * 1000;
 const MAX_MEDIA_ID_CHARS = 200;
@@ -87,6 +88,7 @@ export async function startMediaServer(
 ): Promise<Server> {
   const app = express();
   attachMediaRoutes(app, ttlMs, runtime);
+  attachInjectionScanRoutes(app); // Add debug routes for injection scan metrics
   return await new Promise((resolve, reject) => {
     const server = app.listen(port);
     server.once("listening", () => resolve(server));

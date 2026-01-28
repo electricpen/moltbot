@@ -8,6 +8,320 @@ const TOOL_RESULT_MAX_CHARS = 8000;
 const TOOL_ERROR_MAX_CHARS = 400;
 
 // ============================================================================
+// EXEC EXTERNAL ACCESS DETECTION
+// ============================================================================
+
+/**
+ * Patterns that indicate a command has external network access potential.
+ * These commands can fetch data from external sources, making their output
+ * potentially untrusted and requiring LLM-based injection scanning.
+ */
+const EXTERNAL_ACCESS_PATTERNS: RegExp[] = [
+  // Scripting languages (can make network requests)
+  /\bpython[23]?\b/i,
+  /\bnode\b/i,
+  /\bruby\b/i,
+  /\bperl\b/i,
+  /\bphp\b/i,
+  /\bdeno\b/i,
+  /\bbun\b/i,
+
+  // Network tools
+  /\bcurl\b/i,
+  /\bwget\b/i,
+  /\bnc\b/i, // netcat
+  /\bnetcat\b/i,
+  /\bssh\b/i,
+  /\bscp\b/i,
+  /\bsftp\b/i,
+  /\brsync\b/i,
+  /\bftp\b/i,
+  /\btelnet\b/i,
+  /\bsocat\b/i,
+  /\bhttpie\b/i, // http/https CLI
+  /\bhttp\b/i, // httpie alias
+
+  // Package managers (can fetch remote code)
+  /\bnpm\b/i,
+  /\bnpx\b/i,
+  /\bpnpm\b/i,
+  /\byarn\b/i,
+  /\bpip\b/i,
+  /\bpip3\b/i,
+  /\bgem\b/i,
+  /\bcargo\b/i,
+  /\bgo\s+get\b/i,
+
+  // Git (can fetch remote repos)
+  /\bgit\s+(clone|fetch|pull|remote)\b/i,
+];
+
+/**
+ * Context about the tool being executed, used for conditional scanning decisions.
+ */
+export interface ToolScanContext {
+  toolName: string;
+  args?: Record<string, unknown>;
+}
+
+/**
+ * Checks if an exec command has external network access potential.
+ * Used to determine whether LLM scanning should be applied.
+ */
+export function hasExternalAccessPotential(command: string): boolean {
+  return EXTERNAL_ACCESS_PATTERNS.some((pattern) => pattern.test(command));
+}
+
+/**
+ * Determines if LLM scanning should be applied based on tool context.
+ * - Always scan: web_fetch, browser, message (read actions)
+ * - Conditional scan for exec: only if command has external access potential
+ * - Skip for: internal tools like bash, cat, grep, ls, etc.
+ */
+function shouldApplyLlmScan(context?: ToolScanContext): boolean {
+  if (!context) return true; // Default to scanning if no context
+
+  const toolName = context.toolName.toLowerCase();
+
+  // Always scan these tools (known to fetch external content)
+  const alwaysScanTools = ["web_fetch", "browser", "fetch"];
+  if (alwaysScanTools.includes(toolName)) return true;
+
+  // For exec/bash, check if command has external access potential
+  if (toolName === "exec" || toolName === "bash") {
+    const command = typeof context.args?.command === "string" ? context.args.command : "";
+    return hasExternalAccessPotential(command);
+  }
+
+  // For other tools, default to scanning
+  return true;
+}
+
+// ============================================================================
+// INJECTION SCAN METRICS
+// ============================================================================
+
+const METRICS_FILE_NAME = "injection-scan-metrics.json";
+const LATENCY_HISTORY_SIZE = 100; // Keep last N for percentile calculations
+
+// Capture the metrics directory path when first accessed (during agent run when cwd is workspace)
+let capturedMetricsDir: string | null = null;
+
+function getMetricsPath(): string {
+  if (!capturedMetricsDir) {
+    // Capture path on first access (when cwd is the workspace)
+    capturedMetricsDir = path.resolve(process.cwd(), ".clawdbot");
+  }
+  return path.join(capturedMetricsDir, METRICS_FILE_NAME);
+}
+
+export interface InjectionScanMetrics {
+  since: string; // ISO timestamp when metrics started
+  regexScans: number;
+  llmScans: number;
+  llmScansSkipped: number; // Skipped because tool didn't have external access potential
+  llmTotalLatencyMs: number;
+  llmLatencyHistory: number[]; // Last N latencies for percentiles
+  detections: {
+    regex: number;
+    llm: number;
+  };
+  errors: {
+    llmTimeout: number;
+    llmApiError: number;
+    llmParseError: number;
+  };
+  lastUpdated: string; // ISO timestamp
+}
+
+const DEFAULT_METRICS: InjectionScanMetrics = {
+  since: new Date().toISOString(),
+  regexScans: 0,
+  llmScans: 0,
+  llmScansSkipped: 0,
+  llmTotalLatencyMs: 0,
+  llmLatencyHistory: [],
+  detections: { regex: 0, llm: 0 },
+  errors: { llmTimeout: 0, llmApiError: 0, llmParseError: 0 },
+  lastUpdated: new Date().toISOString(),
+};
+
+// In-memory metrics (hot path, no I/O during scans)
+let scanMetrics: InjectionScanMetrics = { ...DEFAULT_METRICS };
+let metricsLoaded = false;
+
+/**
+ * Loads metrics from disk if available, otherwise starts fresh.
+ */
+function loadMetricsFromDisk(): void {
+  if (metricsLoaded) return;
+  metricsLoaded = true;
+
+  try {
+    const metricsPath = getMetricsPath();
+    if (fs.existsSync(metricsPath)) {
+      const data = fs.readFileSync(metricsPath, "utf-8");
+      const loaded = JSON.parse(data) as Partial<InjectionScanMetrics>;
+      scanMetrics = {
+        ...DEFAULT_METRICS,
+        ...loaded,
+        // Ensure nested objects are properly merged
+        detections: { ...DEFAULT_METRICS.detections, ...loaded.detections },
+        errors: { ...DEFAULT_METRICS.errors, ...loaded.errors },
+      };
+    }
+  } catch (err) {
+    console.warn("[INJECTION METRICS] Failed to load metrics from disk:", err);
+    scanMetrics = { ...DEFAULT_METRICS };
+  }
+}
+
+/**
+ * Persists current metrics to disk.
+ */
+function persistMetrics(): void {
+  try {
+    const metricsPath = getMetricsPath();
+    const dir = path.dirname(metricsPath);
+    fs.mkdirSync(dir, { recursive: true });
+    scanMetrics.lastUpdated = new Date().toISOString();
+    fs.writeFileSync(metricsPath, JSON.stringify(scanMetrics, null, 2), "utf-8");
+  } catch (err) {
+    console.warn("[INJECTION METRICS] Failed to persist metrics:", err);
+  }
+}
+
+// Debounced persist (avoid excessive disk writes)
+let persistTimeout: ReturnType<typeof setTimeout> | null = null;
+function schedulePersist(): void {
+  if (persistTimeout) return;
+  persistTimeout = setTimeout(() => {
+    persistMetrics();
+    persistTimeout = null;
+  }, 5000); // Persist at most every 5 seconds
+}
+
+/**
+ * Records a regex scan event.
+ */
+function recordRegexScan(detected: boolean): void {
+  loadMetricsFromDisk();
+  scanMetrics.regexScans++;
+  if (detected) scanMetrics.detections.regex++;
+  schedulePersist();
+}
+
+/**
+ * Records an LLM scan event with latency.
+ */
+function recordLlmScan(latencyMs: number, detected: boolean): void {
+  loadMetricsFromDisk();
+  scanMetrics.llmScans++;
+  scanMetrics.llmTotalLatencyMs += latencyMs;
+
+  // Keep rolling window of latencies
+  scanMetrics.llmLatencyHistory.push(latencyMs);
+  if (scanMetrics.llmLatencyHistory.length > LATENCY_HISTORY_SIZE) {
+    scanMetrics.llmLatencyHistory.shift();
+  }
+
+  if (detected) scanMetrics.detections.llm++;
+  schedulePersist();
+}
+
+/**
+ * Records an LLM scan error.
+ */
+function recordLlmError(type: "timeout" | "apiError" | "parseError"): void {
+  loadMetricsFromDisk();
+  switch (type) {
+    case "timeout":
+      scanMetrics.errors.llmTimeout++;
+      break;
+    case "apiError":
+      scanMetrics.errors.llmApiError++;
+      break;
+    case "parseError":
+      scanMetrics.errors.llmParseError++;
+      break;
+  }
+  schedulePersist();
+}
+
+/**
+ * Records when an LLM scan is skipped (e.g., exec command without external access potential).
+ */
+function recordLlmScanSkipped(): void {
+  loadMetricsFromDisk();
+  scanMetrics.llmScansSkipped++;
+  schedulePersist();
+}
+
+/**
+ * Calculates percentile from sorted array.
+ */
+function percentile(sorted: number[], p: number): number {
+  if (sorted.length === 0) return 0;
+  const index = Math.ceil((p / 100) * sorted.length) - 1;
+  return sorted[Math.max(0, index)] ?? 0;
+}
+
+/**
+ * Gets current injection scan metrics with calculated statistics.
+ */
+export function getInjectionScanMetrics(): InjectionScanMetrics & {
+  computed: {
+    llmAvgLatencyMs: number;
+    llmP50LatencyMs: number;
+    llmP95LatencyMs: number;
+    llmP99LatencyMs: number;
+    regexDetectionRate: number;
+    llmDetectionRate: number;
+    totalScans: number;
+    totalDetections: number;
+  };
+} {
+  loadMetricsFromDisk();
+
+  const sortedLatencies = [...scanMetrics.llmLatencyHistory].sort((a, b) => a - b);
+
+  return {
+    ...scanMetrics,
+    computed: {
+      llmAvgLatencyMs:
+        scanMetrics.llmScans > 0
+          ? Math.round(scanMetrics.llmTotalLatencyMs / scanMetrics.llmScans)
+          : 0,
+      llmP50LatencyMs: percentile(sortedLatencies, 50),
+      llmP95LatencyMs: percentile(sortedLatencies, 95),
+      llmP99LatencyMs: percentile(sortedLatencies, 99),
+      regexDetectionRate:
+        scanMetrics.regexScans > 0
+          ? Math.round((scanMetrics.detections.regex / scanMetrics.regexScans) * 10000) / 100
+          : 0,
+      llmDetectionRate:
+        scanMetrics.llmScans > 0
+          ? Math.round((scanMetrics.detections.llm / scanMetrics.llmScans) * 10000) / 100
+          : 0,
+      totalScans: scanMetrics.regexScans,
+      totalDetections: scanMetrics.detections.regex + scanMetrics.detections.llm,
+    },
+  };
+}
+
+/**
+ * Resets metrics (for testing or manual reset).
+ */
+export function resetInjectionScanMetrics(): void {
+  scanMetrics = {
+    ...DEFAULT_METRICS,
+    since: new Date().toISOString(),
+    lastUpdated: new Date().toISOString(),
+  };
+  persistMetrics();
+}
+
+// ============================================================================
 // PROMPT INJECTION DETECTION
 // ============================================================================
 
@@ -404,7 +718,7 @@ function buildLlmRequest(
   switch (config.provider) {
     case "google":
       return {
-        url: `https://generativelanguage.googleapis.com/v1beta/models/\${config.model}:generateContent?key=\${apiKey}`,
+        url: `https://generativelanguage.googleapis.com/v1beta/models/${config.model}:generateContent?key=${apiKey}`,
         headers: { "Content-Type": "application/json" },
         body: {
           contents: [{ parts: [{ text: prompt }] }],
@@ -419,7 +733,7 @@ function buildLlmRequest(
         url: "https://api.openai.com/v1/chat/completions",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer \${apiKey}`,
+          Authorization: `Bearer ${apiKey}`,
         },
         body: {
           model: config.model,
@@ -443,7 +757,7 @@ function buildLlmRequest(
         },
       };
     default:
-      throw new Error(`Unknown LLM scan provider: \${config.provider}`);
+      throw new Error(`Unknown LLM scan provider: ${config.provider}`);
   }
 }
 
@@ -481,6 +795,7 @@ function parseLlmResponse(config: LlmScanConfig, responseBody: unknown): LlmScan
     const jsonMatch = text.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
       console.warn("[LLM SCAN] Could not extract JSON from response:", text);
+      recordLlmError("parseError");
       return { injection: false, confidence: 0, reason: "parse error" };
     }
 
@@ -492,6 +807,7 @@ function parseLlmResponse(config: LlmScanConfig, responseBody: unknown): LlmScan
     };
   } catch (err) {
     console.warn("[LLM SCAN] Failed to parse response:", err);
+    recordLlmError("parseError");
     return { injection: false, confidence: 0, reason: "parse error" };
   }
 }
@@ -499,10 +815,13 @@ function parseLlmResponse(config: LlmScanConfig, responseBody: unknown): LlmScan
 /**
  * Performs LLM-based injection scanning on content.
  * Returns null if LLM scanning is disabled or fails.
+ * Records latency and detection metrics.
  */
 async function llmScanForInjection(text: string): Promise<LlmScanResult | null> {
   const config = injectionConfig.llmScan;
   if (!config?.enabled) return null;
+
+  const startTime = performance.now();
 
   try {
     const { url, body, headers } = buildLlmRequest(config, text);
@@ -521,17 +840,27 @@ async function llmScanForInjection(text: string): Promise<LlmScanResult | null> 
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.warn(`[LLM SCAN] API error (\${response.status}): \${errorText.slice(0, 200)}`);
+      console.warn(`[LLM SCAN] API error (${response.status}): ${errorText.slice(0, 200)}`);
+      recordLlmError("apiError");
       return null;
     }
 
     const responseBody = await response.json();
-    return parseLlmResponse(config, responseBody);
+    const result = parseLlmResponse(config, responseBody);
+
+    // Record metrics
+    const latencyMs = Math.round(performance.now() - startTime);
+    const detected = result.injection && result.confidence >= (config.confidenceThreshold ?? 0.7);
+    recordLlmScan(latencyMs, detected);
+
+    return result;
   } catch (err) {
     if (err instanceof Error && err.name === "AbortError") {
       console.warn("[LLM SCAN] Request timed out");
+      recordLlmError("timeout");
     } else {
       console.warn("[LLM SCAN] Request failed:", err);
+      recordLlmError("apiError");
     }
     return null;
   }
@@ -720,8 +1049,13 @@ function sanitizeTextContent(text: string): { text: string; regexFlagged: boolea
 
   if (injectionConfig.enabled) {
     const scanResult = scanForInjection(result);
+    const detected =
+      scanResult.detected && meetsMinSeverity(scanResult, injectionConfig.minSeverity);
 
-    if (scanResult.detected && meetsMinSeverity(scanResult, injectionConfig.minSeverity)) {
+    // Record metrics for regex scan
+    recordRegexScan(detected);
+
+    if (detected) {
       regexFlagged = true;
 
       if (injectionConfig.logDetections) {
@@ -762,6 +1096,14 @@ function sanitizeTextContent(text: string): { text: string; regexFlagged: boolea
 export function sanitizeToolResult(result: unknown): unknown {
   if (!result || typeof result !== "object") return result;
   const record = result as Record<string, unknown>;
+
+  // Handle direct text field (e.g., web_fetch, Read results)
+  if (typeof record.text === "string") {
+    const { text } = sanitizeTextContent(record.text);
+    return { ...record, text };
+  }
+
+  // Handle content array format (Anthropic-style tool results)
   const content = Array.isArray(record.content) ? record.content : null;
   if (!content) return record;
 
@@ -791,10 +1133,74 @@ export function sanitizeToolResult(result: unknown): unknown {
 /**
  * Async sanitization - regex + optional LLM scan.
  * Used for final tool results where we can afford async.
+ *
+ * @param result - The tool result to sanitize
+ * @param context - Optional tool context for conditional LLM scanning.
+ *   For exec/bash tools, LLM scan only runs if the command has external access potential.
+ *   For other tools (web_fetch, browser, etc.), LLM scan always runs when enabled.
  */
-export async function sanitizeToolResultAsync(result: unknown): Promise<unknown> {
+export async function sanitizeToolResultAsync(
+  result: unknown,
+  context?: ToolScanContext,
+): Promise<unknown> {
   if (!result || typeof result !== "object") return result;
   const record = result as Record<string, unknown>;
+
+  // Determine if LLM scanning should be applied based on tool context
+  const applyLlmScan = shouldApplyLlmScan(context);
+
+  // Handle direct text field (e.g., web_fetch, Read results)
+  if (typeof record.text === "string") {
+    const originalText = record.text;
+    const { text, regexFlagged } = sanitizeTextContent(originalText);
+
+    // If regex already flagged it, we're done
+    if (regexFlagged) {
+      return { ...record, text };
+    }
+
+    // Track when LLM scanning is skipped (enabled but not applicable for this tool)
+    if (injectionConfig.llmScan?.enabled && !applyLlmScan) {
+      recordLlmScanSkipped();
+    }
+
+    // If LLM scanning is enabled, applicable for this tool, and regex didn't catch it
+    if (injectionConfig.llmScan?.enabled && applyLlmScan && !regexFlagged) {
+      const llmResult = await llmScanForInjection(originalText);
+
+      if (
+        llmResult &&
+        llmResult.injection &&
+        llmResult.confidence >= (injectionConfig.llmScan.confidenceThreshold ?? 0.7)
+      ) {
+        if (injectionConfig.logDetections) {
+          console.warn(
+            `[INJECTION DETECTED - LLM] Confidence: ${(llmResult.confidence * 100).toFixed(1)}%, ` +
+              `Reason: ${llmResult.reason}`,
+          );
+        }
+
+        switch (injectionConfig.action) {
+          case "strip": {
+            const quarantinePath = quarantineLlmFlagged(originalText, llmResult);
+            return { ...record, text: generateLlmStrippedNotice(llmResult, quarantinePath) };
+          }
+          case "block": {
+            return { ...record, text: generateLlmStrippedNotice(llmResult, null) };
+          }
+          case "warn":
+          default: {
+            const warning = `⚠️ LLM INJECTION WARNING (${(llmResult.confidence * 100).toFixed(1)}% confidence): ${llmResult.reason}\n\n---POTENTIALLY UNTRUSTED CONTENT---\n${originalText}\n---END POTENTIALLY UNTRUSTED CONTENT---`;
+            return { ...record, text: warning };
+          }
+        }
+      }
+    }
+
+    return { ...record, text };
+  }
+
+  // Handle content array format (Anthropic-style tool results)
   const content = Array.isArray(record.content) ? record.content : null;
   if (!content) return record;
 
@@ -805,16 +1211,43 @@ export async function sanitizeToolResultAsync(result: unknown): Promise<unknown>
       const type = typeof entry.type === "string" ? entry.type : undefined;
 
       if (type === "text" && typeof entry.text === "string") {
-        const originalText = entry.text;
-        const { text, regexFlagged } = sanitizeTextContent(originalText);
+        let originalText = entry.text;
+        let isJsonWrapped = false;
+        let parsedJson: Record<string, unknown> | null = null;
+
+        // Check if the text is actually JSON-stringified tool output with an inner .text field
+        if (originalText.startsWith("{") && originalText.includes('"text"')) {
+          try {
+            parsedJson = JSON.parse(originalText) as Record<string, unknown>;
+            if (parsedJson && typeof parsedJson.text === "string") {
+              // Extract the inner text for scanning
+              originalText = parsedJson.text;
+              isJsonWrapped = true;
+            }
+          } catch {
+            // Not valid JSON, scan as-is
+          }
+        }
+
+        const { text: sanitizedText, regexFlagged } = sanitizeTextContent(originalText);
 
         // If regex already flagged it, we're done
         if (regexFlagged) {
-          return { ...entry, text };
+          // If it was JSON-wrapped, update the inner .text and re-stringify
+          if (isJsonWrapped && parsedJson) {
+            parsedJson.text = sanitizedText;
+            return { ...entry, text: JSON.stringify(parsedJson, null, 2) };
+          }
+          return { ...entry, text: sanitizedText };
         }
 
-        // If LLM scanning is enabled and regex didn't catch it, run LLM scan
-        if (injectionConfig.llmScan?.enabled && !regexFlagged) {
+        // Track when LLM scanning is skipped (enabled but not applicable for this tool)
+        if (injectionConfig.llmScan?.enabled && !applyLlmScan) {
+          recordLlmScanSkipped();
+        }
+
+        // If LLM scanning is enabled, applicable for this tool, and regex didn't catch it
+        if (injectionConfig.llmScan?.enabled && applyLlmScan && !regexFlagged) {
           const llmResult = await llmScanForInjection(originalText);
 
           if (
@@ -847,7 +1280,12 @@ export async function sanitizeToolResultAsync(result: unknown): Promise<unknown>
           }
         }
 
-        return { ...entry, text };
+        // No injection detected - return original or re-wrapped text
+        if (isJsonWrapped && parsedJson) {
+          // Text wasn't modified, just return original
+          return entry;
+        }
+        return { ...entry, text: sanitizedText };
       }
 
       if (type === "image") {
@@ -862,6 +1300,95 @@ export async function sanitizeToolResultAsync(result: unknown): Promise<unknown>
   );
 
   return { ...record, content: sanitized };
+}
+
+/**
+ * Sanitizes a tool payload BEFORE it gets JSON-stringified.
+ * This is called from jsonResult() in common.ts to catch injections at the source.
+ * Only synchronous regex scanning is used here since this is in the hot path.
+ */
+export function sanitizeToolPayload(payload: unknown): unknown {
+  if (!payload || typeof payload !== "object") return payload;
+  const record = payload as Record<string, unknown>;
+
+  // If payload has a direct .text field, sanitize it
+  if (typeof record.text === "string") {
+    const { text, regexFlagged } = sanitizeTextContent(record.text);
+    if (regexFlagged) {
+      return { ...record, text };
+    }
+  }
+
+  return payload;
+}
+
+/**
+ * Async version of sanitizeToolPayload that includes LLM scanning.
+ * This adds latency but catches sophisticated injection attempts.
+ */
+export async function sanitizeToolPayloadAsync(payload: unknown): Promise<unknown> {
+  if (!payload || typeof payload !== "object") return payload;
+  const record = payload as Record<string, unknown>;
+
+  // If payload has a direct .text field, sanitize it
+  if (typeof record.text === "string") {
+    const originalText = record.text;
+    const { text, regexFlagged } = sanitizeTextContent(originalText);
+
+    // If regex already flagged it, we're done
+    if (regexFlagged) {
+      return { ...record, text };
+    }
+
+    // If LLM scanning is enabled and regex didn't catch it, run LLM scan
+    if (injectionConfig.llmScan?.enabled) {
+      const startTime = Date.now();
+      const llmResult = await llmScanForInjection(originalText);
+      const latencyMs = Date.now() - startTime;
+
+      if (llmResult) {
+        // Record metrics
+        recordLlmScan(
+          latencyMs,
+          llmResult.injection &&
+            llmResult.confidence >= (injectionConfig.llmScan.confidenceThreshold ?? 0.7),
+        );
+
+        if (
+          llmResult.injection &&
+          llmResult.confidence >= (injectionConfig.llmScan.confidenceThreshold ?? 0.7)
+        ) {
+          if (injectionConfig.logDetections) {
+            console.warn(
+              `[INJECTION DETECTED - LLM] Confidence: ${(llmResult.confidence * 100).toFixed(1)}%, ` +
+                `Reason: ${llmResult.reason}, Latency: ${latencyMs}ms`,
+            );
+          }
+
+          // Apply the same action as regex would
+          switch (injectionConfig.action) {
+            case "strip": {
+              const quarantinePath = quarantineLlmFlagged(originalText, llmResult);
+              return { ...record, text: generateLlmStrippedNotice(llmResult, quarantinePath) };
+            }
+            case "block": {
+              return { ...record, text: generateLlmStrippedNotice(llmResult, null) };
+            }
+            case "warn":
+            default: {
+              const warning = `⚠️ LLM INJECTION WARNING (${(llmResult.confidence * 100).toFixed(1)}% confidence): ${llmResult.reason}\n\n---POTENTIALLY UNTRUSTED CONTENT---\n${originalText}\n---END POTENTIALLY UNTRUSTED CONTENT---`;
+              return { ...record, text: warning };
+            }
+          }
+        }
+      } else {
+        // LLM scan failed or returned null - record as scan with no detection
+        recordLlmScan(latencyMs, false);
+      }
+    }
+  }
+
+  return payload;
 }
 
 export function extractToolResultText(result: unknown): string | undefined {

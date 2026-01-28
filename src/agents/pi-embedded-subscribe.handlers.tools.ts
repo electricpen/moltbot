@@ -11,6 +11,7 @@ import {
   isToolResultError,
   sanitizeToolResult,
   sanitizeToolResultAsync,
+  type ToolScanContext,
 } from "./pi-embedded-subscribe.tools.js";
 import { inferToolMetaFromArgs } from "./pi-embedded-utils.js";
 import { normalizeToolName } from "./tool-policy.js";
@@ -56,6 +57,10 @@ export async function handleToolExecutionStart(
 
   const meta = extendExecMeta(toolName, args, inferToolMetaFromArgs(toolName, args));
   ctx.state.toolMetaById.set(toolCallId, meta);
+  // Store args for injection scan context (needed for conditional LLM scanning based on command)
+  const argsRecord =
+    args && typeof args === "object" ? (args as Record<string, unknown>) : undefined;
+  ctx.state.toolArgsById.set(toolCallId, argsRecord);
   ctx.log.debug(
     `embedded run tool start: runId=${ctx.params.runId} tool=${toolName} toolCallId=${toolCallId}`,
   );
@@ -151,11 +156,18 @@ export async function handleToolExecutionEnd(
   const isError = Boolean(evt.isError);
   const result = evt.result;
   const isToolError = isError || isToolResultError(result);
+
+  // Get stored args for injection scan context (conditional LLM scanning for exec)
+  const toolArgs = ctx.state.toolArgsById.get(toolCallId);
+  const scanContext: ToolScanContext = { toolName, args: toolArgs };
+
   // Use async sanitization for final results (supports LLM scanning)
-  const sanitizedResult = await sanitizeToolResultAsync(result);
+  // Pass tool context so LLM scan only runs for external-access exec commands
+  const sanitizedResult = await sanitizeToolResultAsync(result, scanContext);
   const meta = ctx.state.toolMetaById.get(toolCallId);
   ctx.state.toolMetas.push({ toolName, meta });
   ctx.state.toolMetaById.delete(toolCallId);
+  ctx.state.toolArgsById.delete(toolCallId);
   ctx.state.toolSummaryById.delete(toolCallId);
   if (isToolError) {
     const errorMessage = extractToolErrorMessage(sanitizedResult);

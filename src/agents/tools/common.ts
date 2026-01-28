@@ -168,15 +168,19 @@ export function readReactionParams(
   return { emoji, remove, isEmpty: !emoji };
 }
 
-export function jsonResult(payload: unknown): AgentToolResult<unknown> {
+import { sanitizeToolPayloadAsync } from "../pi-embedded-subscribe.tools.js";
+
+export async function jsonResult(payload: unknown): Promise<AgentToolResult<unknown>> {
+  // Sanitize payload before JSON serialization (handles injection scanning including LLM)
+  const sanitizedPayload = await sanitizeToolPayloadAsync(payload);
   return {
     content: [
       {
         type: "text",
-        text: JSON.stringify(payload, null, 2),
+        text: JSON.stringify(sanitizedPayload, null, 2),
       },
     ],
-    details: payload,
+    details: sanitizedPayload,
   };
 }
 
