@@ -10,6 +10,7 @@ import type { WebSocketServer } from "ws";
 import { handleA2uiHttpRequest } from "../canvas-host/a2ui.js";
 import type { CanvasHostHandler } from "../canvas-host/server.js";
 import { loadConfig } from "../config/config.js";
+import { isLoopbackAddress } from "./net.js";
 import type { createSubsystemLogger } from "../logging/subsystem.js";
 import { handleSlackHttpRequest } from "../slack/http/index.js";
 import { resolveAgentAvatar } from "../agents/identity-avatar.js";
@@ -309,6 +310,55 @@ export function attachGatewayUpgradeHandler(opts: {
   const { httpServer, wss, canvasHost } = opts;
   httpServer.on("upgrade", (req, socket, head) => {
     if (canvasHost?.handleUpgrade(req, socket, head)) return;
+
+    // --- WebSocket Origin validation (CVE-mitigating) ---
+    // Browser-based WebSocket connections always send an Origin header.
+    // A malicious webpage could open a WS to localhost if it has the token.
+    // Reject browser connections from non-local origins to prevent
+    // browser-pivot / cross-origin WebSocket hijacking attacks.
+    // See: https://blog.ethiack.com/browser-as-a-proxy
+    const origin = Array.isArray(req.headers.origin) ? req.headers.origin[0] : req.headers.origin;
+    if (origin) {
+      let originHostname: string;
+      try {
+        originHostname = new URL(origin).hostname;
+      } catch {
+        // Malformed origin — reject
+        socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
+        socket.destroy();
+        return;
+      }
+
+      const cfg = loadConfig();
+      const bindMode = cfg.gateway?.bind ?? "loopback";
+      const originIsLocal = isLoopbackAddress(originHostname) || originHostname === "localhost";
+
+      if (bindMode === "loopback") {
+        // Loopback-bound gateway: only allow local origins
+        if (!originIsLocal) {
+          console.warn(
+            `[gateway] rejected WebSocket upgrade: non-local origin "${origin}" on loopback-bound gateway`,
+          );
+          socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
+          socket.destroy();
+          return;
+        }
+      } else {
+        // Publicly bound gateway: reject origins that aren't localhost
+        // or the gateway's own host
+        const requestHost = (req.headers.host ?? "").split(":")[0]?.toLowerCase();
+        if (!originIsLocal && originHostname !== requestHost) {
+          console.warn(
+            `[gateway] rejected WebSocket upgrade: origin "${origin}" doesn't match gateway host "${requestHost}"`,
+          );
+          socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
+          socket.destroy();
+          return;
+        }
+      }
+    }
+    // --- End Origin validation ---
+
     wss.handleUpgrade(req, socket, head, (ws) => {
       wss.emit("connection", ws, req);
     });
