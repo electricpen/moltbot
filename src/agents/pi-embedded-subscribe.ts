@@ -107,17 +107,27 @@ export function subscribeEmbeddedPiSession(params: SubscribeEmbeddedPiSessionPar
   };
 
   const shouldSkipAssistantText = (text: string) => {
-    if (state.lastAssistantTextMessageIndex !== state.assistantMessageIndex) return false;
+    if (state.lastAssistantTextMessageIndex !== state.assistantMessageIndex) {
+      return false;
+    }
     const trimmed = text.trimEnd();
-    if (trimmed && trimmed === state.lastAssistantTextTrimmed) return true;
+    if (trimmed && trimmed === state.lastAssistantTextTrimmed) {
+      return true;
+    }
     const normalized = normalizeTextForComparison(text);
-    if (normalized.length > 0 && normalized === state.lastAssistantTextNormalized) return true;
+    if (normalized.length > 0 && normalized === state.lastAssistantTextNormalized) {
+      return true;
+    }
     return false;
   };
 
   const pushAssistantText = (text: string) => {
-    if (!text) return;
-    if (shouldSkipAssistantText(text)) return;
+    if (!text) {
+      return;
+    }
+    if (shouldSkipAssistantText(text)) {
+      return;
+    }
     assistantTexts.push(text);
     rememberAssistantText(text);
   };
@@ -185,7 +195,9 @@ export function subscribeEmbeddedPiSession(params: SubscribeEmbeddedPiSessionPar
   };
 
   const resolveCompactionRetry = () => {
-    if (state.pendingCompactionRetry <= 0) return;
+    if (state.pendingCompactionRetry <= 0) {
+      return;
+    }
     state.pendingCompactionRetry -= 1;
     if (state.pendingCompactionRetry === 0 && !state.compactionInFlight) {
       state.compactionRetryResolve?.();
@@ -217,17 +229,25 @@ export function subscribeEmbeddedPiSession(params: SubscribeEmbeddedPiSessionPar
       : params.verboseLevel === "full";
   const formatToolOutputBlock = (text: string) => {
     const trimmed = text.trim();
-    if (!trimmed) return "(no output)";
-    if (!useMarkdown) return trimmed;
+    if (!trimmed) {
+      return "(no output)";
+    }
+    if (!useMarkdown) {
+      return trimmed;
+    }
     return `\`\`\`txt\n${trimmed}\n\`\`\``;
   };
   const emitToolSummary = (toolName?: string, meta?: string) => {
-    if (!params.onToolResult) return;
+    if (!params.onToolResult) {
+      return;
+    }
     const agg = formatToolAggregate(toolName, meta ? [meta] : undefined, {
       markdown: useMarkdown,
     });
     const { text: cleanedText, mediaUrls } = parseReplyDirectives(agg);
-    if (!cleanedText && (!mediaUrls || mediaUrls.length === 0)) return;
+    if (!cleanedText && (!mediaUrls || mediaUrls.length === 0)) {
+      return;
+    }
     try {
       void params.onToolResult({
         text: cleanedText,
@@ -238,13 +258,17 @@ export function subscribeEmbeddedPiSession(params: SubscribeEmbeddedPiSessionPar
     }
   };
   const emitToolOutput = (toolName?: string, meta?: string, output?: string) => {
-    if (!params.onToolResult || !output) return;
+    if (!params.onToolResult || !output) {
+      return;
+    }
     const agg = formatToolAggregate(toolName, meta ? [meta] : undefined, {
       markdown: useMarkdown,
     });
     const message = `${agg}\n${formatToolOutputBlock(output)}`;
     const { text: cleanedText, mediaUrls } = parseReplyDirectives(message);
-    if (!cleanedText && (!mediaUrls || mediaUrls.length === 0)) return;
+    if (!cleanedText && (!mediaUrls || mediaUrls.length === 0)) {
+      return;
+    }
     try {
       void params.onToolResult({
         text: cleanedText,
@@ -259,7 +283,9 @@ export function subscribeEmbeddedPiSession(params: SubscribeEmbeddedPiSessionPar
     text: string,
     state: { thinking: boolean; final: boolean; inlineCode?: InlineCodeState },
   ): string => {
-    if (!text) return text;
+    if (!text) {
+      return text;
+    }
 
     const inlineStateStart = state.inlineCode ?? createInlineCodeState();
     const codeSpans = buildCodeSpanIndex(text, inlineStateStart);
@@ -271,7 +297,9 @@ export function subscribeEmbeddedPiSession(params: SubscribeEmbeddedPiSessionPar
     let inThinking = state.thinking;
     for (const match of text.matchAll(THINKING_TAG_SCAN_RE)) {
       const idx = match.index ?? 0;
-      if (codeSpans.isInside(idx)) continue;
+      if (codeSpans.isInside(idx)) {
+        continue;
+      }
       if (!inThinking) {
         processed += text.slice(lastIndex, idx);
       }
@@ -304,7 +332,9 @@ export function subscribeEmbeddedPiSession(params: SubscribeEmbeddedPiSessionPar
 
     for (const match of processed.matchAll(FINAL_TAG_SCAN_RE)) {
       const idx = match.index ?? 0;
-      if (finalCodeSpans.isInside(idx)) continue;
+      if (finalCodeSpans.isInside(idx)) {
+        continue;
+      }
       const isClose = match[1] === "/";
 
       if (!inFinal && !isClose) {
@@ -349,7 +379,9 @@ export function subscribeEmbeddedPiSession(params: SubscribeEmbeddedPiSessionPar
     pattern.lastIndex = 0;
     for (const match of text.matchAll(pattern)) {
       const idx = match.index ?? 0;
-      if (isInside(idx)) continue;
+      if (isInside(idx)) {
+        continue;
+      }
       output += text.slice(lastIndex, idx);
       lastIndex = idx + match[0].length;
     }
@@ -358,11 +390,17 @@ export function subscribeEmbeddedPiSession(params: SubscribeEmbeddedPiSessionPar
   };
 
   const emitBlockChunk = (text: string) => {
-    if (state.suppressBlockChunks) return;
+    if (state.suppressBlockChunks) {
+      return;
+    }
     // Strip <think> and <final> blocks across chunk boundaries to avoid leaking reasoning.
     const chunk = stripBlockTags(text, state.blockState).trimEnd();
-    if (!chunk) return;
-    if (chunk === state.lastBlockReplyText) return;
+    if (!chunk) {
+      return;
+    }
+    if (chunk === state.lastBlockReplyText) {
+      return;
+    }
 
     // Only check committed (successful) messaging tool texts - checking pending texts
     // is risky because if the tool fails after suppression, the user gets no response
@@ -372,14 +410,20 @@ export function subscribeEmbeddedPiSession(params: SubscribeEmbeddedPiSessionPar
       return;
     }
 
-    if (shouldSkipAssistantText(chunk)) return;
+    if (shouldSkipAssistantText(chunk)) {
+      return;
+    }
 
     state.lastBlockReplyText = chunk;
     assistantTexts.push(chunk);
     rememberAssistantText(chunk);
-    if (!params.onBlockReply) return;
+    if (!params.onBlockReply) {
+      return;
+    }
     const splitResult = replyDirectiveAccumulator.consume(chunk);
-    if (!splitResult) return;
+    if (!splitResult) {
+      return;
+    }
     const {
       text: cleanedText,
       mediaUrls,
@@ -389,7 +433,9 @@ export function subscribeEmbeddedPiSession(params: SubscribeEmbeddedPiSessionPar
       replyToCurrent,
     } = splitResult;
     // Skip empty payloads, but always emit if audioAsVoice is set (to propagate the flag)
-    if (!cleanedText && (!mediaUrls || mediaUrls.length === 0) && !audioAsVoice) return;
+    if (!cleanedText && (!mediaUrls || mediaUrls.length === 0) && !audioAsVoice) {
+      return;
+    }
     void params.onBlockReply({
       text: cleanedText,
       mediaUrls: mediaUrls?.length ? mediaUrls : undefined,
@@ -404,7 +450,9 @@ export function subscribeEmbeddedPiSession(params: SubscribeEmbeddedPiSessionPar
     replyDirectiveAccumulator.consume(text, options);
 
   const flushBlockReplyBuffer = () => {
-    if (!params.onBlockReply) return;
+    if (!params.onBlockReply) {
+      return;
+    }
     if (blockChunker?.hasBuffered()) {
       blockChunker.drain({ force: true, emit: emitBlockChunk });
       blockChunker.reset();
@@ -417,10 +465,16 @@ export function subscribeEmbeddedPiSession(params: SubscribeEmbeddedPiSessionPar
   };
 
   const emitReasoningStream = (text: string) => {
-    if (!state.streamReasoning || !params.onReasoningStream) return;
+    if (!state.streamReasoning || !params.onReasoningStream) {
+      return;
+    }
     const formatted = formatReasoningMessage(text);
-    if (!formatted) return;
-    if (formatted === state.lastStreamedReasoning) return;
+    if (!formatted) {
+      return;
+    }
+    if (formatted === state.lastStreamedReasoning) {
+      return;
+    }
     state.lastStreamedReasoning = formatted;
     void params.onReasoningStream({
       text: formatted,
