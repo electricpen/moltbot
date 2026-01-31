@@ -3,7 +3,7 @@ import os from "node:os";
 
 import {
   createAgentSession,
-  DefaultResourceLoader,
+  // DefaultResourceLoader, // TODO: not yet exported in pi-coding-agent 0.50.7
   estimateTokens,
   SessionManager,
   SettingsManager,
@@ -386,16 +386,9 @@ export async function compactEmbeddedPiSessionDirect(
         sandboxEnabled: !!sandbox?.enabled,
       });
 
-      const resourceLoader = new DefaultResourceLoader({
-        cwd: resolvedWorkspace,
-        agentDir,
-        settingsManager,
-        additionalExtensionPaths,
-        noSkills: true,
-        systemPromptOverride: systemPrompt,
-        agentsFilesOverride: () => ({ agentsFiles: [] }),
-      });
-      await resourceLoader.reload();
+      // TODO: DefaultResourceLoader not yet exported in pi-coding-agent 0.50.7
+      // const resourceLoader = new DefaultResourceLoader({...});
+      // await resourceLoader.reload();
 
       const { session } = await createAgentSession({
         cwd: resolvedWorkspace,
@@ -408,7 +401,7 @@ export async function compactEmbeddedPiSessionDirect(
         customTools,
         sessionManager,
         settingsManager,
-        resourceLoader,
+        // resourceLoader, // TODO: add back when pi-coding-agent exports DefaultResourceLoader
       });
 
       try {
