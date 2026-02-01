@@ -1,8 +1,7 @@
 import { getChannelPlugin, normalizeChannelId } from "../channels/plugins/index.js";
+import { normalizeTargetForProvider } from "../infra/outbound/target-normalization.js";
 import { truncateUtf16Safe } from "../utils.js";
 import { type MessagingToolSend } from "./pi-embedded-messaging.js";
-import { normalizeTargetForProvider } from "../infra/outbound/target-normalization.js";
-import type { InjectionScanConfig as ConfigInjectionScanConfig } from "../config/types.tools.js";
 
 const TOOL_RESULT_MAX_CHARS = 8000;
 const TOOL_ERROR_MAX_CHARS = 400;
@@ -685,7 +684,9 @@ export function configureInjectionScanning(config: Partial<InjectionScanConfig>)
  * Initializes injection scanning configuration from Clawdbot config.
  * Called during gateway startup.
  */
-export function initInjectionScanFromConfig(configInjectionScan?: ConfigInjectionScanConfig): void {
+export function initInjectionScanFromConfig(
+  configInjectionScan?: import("../config/types.tools.js").InjectionScanConfig,
+): void {
   if (!configInjectionScan) return;
 
   const llmScanConfig = configInjectionScan.llmScan;

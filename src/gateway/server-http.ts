@@ -1,3 +1,5 @@
+import type { TlsOptions } from "node:tls";
+import type { WebSocketServer } from "ws";
 import {
   createServer as createHttpServer,
   type Server as HttpServer,
@@ -5,16 +7,14 @@ import {
   type ServerResponse,
 } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
-import type { TlsOptions } from "node:tls";
-import type { WebSocketServer } from "ws";
-import { handleA2uiHttpRequest } from "../canvas-host/a2ui.js";
 import type { CanvasHostHandler } from "../canvas-host/server.js";
-import { loadConfig } from "../config/config.js";
-import { isLoopbackAddress } from "./net.js";
 import type { createSubsystemLogger } from "../logging/subsystem.js";
-import { handleSlackHttpRequest } from "../slack/http/index.js";
 import { resolveAgentAvatar } from "../agents/identity-avatar.js";
+import { handleA2uiHttpRequest } from "../canvas-host/a2ui.js";
+import { loadConfig } from "../config/config.js";
+import { handleSlackHttpRequest } from "../slack/http/index.js";
 import { handleControlUiAvatarRequest, handleControlUiHttpRequest } from "./control-ui.js";
+import { applyHookMappings } from "./hooks-mapping.js";
 import {
   extractHookToken,
   getHookChannelError,
@@ -27,7 +27,7 @@ import {
   resolveHookChannel,
   resolveHookDeliver,
 } from "./hooks.js";
-import { applyHookMappings } from "./hooks-mapping.js";
+import { isLoopbackAddress } from "./net.js";
 import { handleOpenAiHttpRequest } from "./openai-http.js";
 import { handleOpenResponsesHttpRequest } from "./openresponses-http.js";
 import { handleToolsInvokeHttpRequest } from "./tools-invoke-http.js";
@@ -332,11 +332,7 @@ export function attachGatewayUpgradeHandler(opts: {
       return;
     }
 
-    // --- WebSocket Origin validation (CVE-mitigating) ---
-    // Browser-based WebSocket connections always send an Origin header.
-    // A malicious webpage could open a WS to localhost if it has the token.
-    // Reject browser connections from non-local origins to prevent
-    // browser-pivot / cross-origin WebSocket hijacking attacks.
+    // --- WebSocket Origin validation (custom security patch) ---
     // See: https://blog.ethiack.com/browser-as-a-proxy
     const origin = Array.isArray(req.headers.origin) ? req.headers.origin[0] : req.headers.origin;
     if (origin) {
