@@ -32,6 +32,7 @@ import {
 import { resolveModel } from "../agents/pi-embedded-runner/model.js";
 import { normalizeChannelId } from "../channels/plugins/index.js";
 import { logVerbose } from "../globals.js";
+import { stripMarkdown } from "../line/markdown-to-line.js";
 import { isVoiceCompatibleAudio } from "../media/audio.js";
 import { CONFIG_DIR, resolveUserPath } from "../utils.js";
 
@@ -841,13 +842,18 @@ function isCustomOpenAIEndpoint(): boolean {
 export const OPENAI_TTS_VOICES = [
   "alloy",
   "ash",
+  "ballad",
+  "cedar",
   "coral",
   "echo",
   "fable",
+  "juniper",
+  "marin",
   "onyx",
   "nova",
   "sage",
   "shimmer",
+  "verse",
 ] as const;
 
 type OpenAiTtsVoice = (typeof OPENAI_TTS_VOICES)[number];
@@ -931,7 +937,7 @@ async function summarizeText(params: {
 
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    const timeout = setTimeout(controller.abort.bind(controller), timeoutMs);
 
     try {
       const res = await completeSimple(
@@ -1032,7 +1038,7 @@ async function elevenLabsTTS(params: {
   const normalizedSeed = normalizeSeed(seed);
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const timeout = setTimeout(controller.abort.bind(controller), timeoutMs);
 
   try {
     const url = new URL(`${normalizeElevenLabsBaseUrl(baseUrl)}/v1/text-to-speech/${voiceId}`);
@@ -1092,7 +1098,7 @@ async function openaiTTS(params: {
   }
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const timeout = setTimeout(controller.abort.bind(controller), timeoutMs);
 
   try {
     const response = await fetch(`${getOpenAITtsBaseUrl()}/audio/speech`, {
@@ -1492,13 +1498,11 @@ export async function maybeApplyTtsToPayload(params: {
 
   if (textForAudio.length > maxLength) {
     if (!isSummarizationEnabled(prefsPath)) {
-      // Truncate text when summarization is disabled
       logVerbose(
         `TTS: truncating long text (${textForAudio.length} > ${maxLength}), summarization disabled.`,
       );
       textForAudio = `${textForAudio.slice(0, maxLength - 3)}...`;
     } else {
-      // Summarize text when enabled
       try {
         const summary = await summarizeText({
           text: textForAudio,
@@ -1521,6 +1525,11 @@ export async function maybeApplyTtsToPayload(params: {
         textForAudio = `${textForAudio.slice(0, maxLength - 3)}...`;
       }
     }
+  }
+
+  textForAudio = stripMarkdown(textForAudio).trim(); // strip markdown for TTS (### → "hashtag" etc.)
+  if (textForAudio.length < 10) {
+    return nextPayload;
   }
 
   const ttsStart = Date.now();

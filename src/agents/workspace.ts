@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { resolveRequiredHomeDir } from "../infra/home-dir.js";
 import { runCommandWithTimeout } from "../process/exec.js";
 import { isSubagentSessionKey } from "../routing/session-key.js";
 import { resolveUserPath } from "../utils.js";
@@ -10,11 +11,12 @@ export function resolveDefaultAgentWorkspaceDir(
   env: NodeJS.ProcessEnv = process.env,
   homedir: () => string = os.homedir,
 ): string {
+  const home = resolveRequiredHomeDir(env, homedir);
   const profile = env.OPENCLAW_PROFILE?.trim();
   if (profile && profile.toLowerCase() !== "default") {
-    return path.join(homedir(), ".openclaw", `workspace-${profile}`);
+    return path.join(home, ".openclaw", `workspace-${profile}`);
   }
-  return path.join(homedir(), ".openclaw", "workspace");
+  return path.join(home, ".openclaw", "workspace");
 }
 
 export const DEFAULT_AGENT_WORKSPACE_DIR = resolveDefaultAgentWorkspaceDir();
@@ -27,6 +29,9 @@ export const DEFAULT_HEARTBEAT_FILENAME = "HEARTBEAT.md";
 export const DEFAULT_BOOTSTRAP_FILENAME = "BOOTSTRAP.md";
 export const DEFAULT_MEMORY_FILENAME = "MEMORY.md";
 export const DEFAULT_MEMORY_ALT_FILENAME = "memory.md";
+
+const workspaceTemplateCache = new Map<string, Promise<string>>();
+let gitAvailabilityPromise: Promise<boolean> | null = null;
 
 function stripFrontMatter(content: string): string {
   if (!content.startsWith("---")) {
@@ -43,15 +48,30 @@ function stripFrontMatter(content: string): string {
 }
 
 async function loadTemplate(name: string): Promise<string> {
-  const templateDir = await resolveWorkspaceTemplateDir();
-  const templatePath = path.join(templateDir, name);
+  const cached = workspaceTemplateCache.get(name);
+  if (cached) {
+    return cached;
+  }
+
+  const pending = (async () => {
+    const templateDir = await resolveWorkspaceTemplateDir();
+    const templatePath = path.join(templateDir, name);
+    try {
+      const content = await fs.readFile(templatePath, "utf-8");
+      return stripFrontMatter(content);
+    } catch {
+      throw new Error(
+        `Missing workspace template: ${name} (${templatePath}). Ensure docs/reference/templates are packaged.`,
+      );
+    }
+  })();
+
+  workspaceTemplateCache.set(name, pending);
   try {
-    const content = await fs.readFile(templatePath, "utf-8");
-    return stripFrontMatter(content);
-  } catch {
-    throw new Error(
-      `Missing workspace template: ${name} (${templatePath}). Ensure docs/reference/templates are packaged.`,
-    );
+    return await pending;
+  } catch (error) {
+    workspaceTemplateCache.delete(name);
+    throw error;
   }
 }
 
@@ -97,12 +117,20 @@ async function hasGitRepo(dir: string): Promise<boolean> {
 }
 
 async function isGitAvailable(): Promise<boolean> {
-  try {
-    const result = await runCommandWithTimeout(["git", "--version"], { timeoutMs: 2_000 });
-    return result.code === 0;
-  } catch {
-    return false;
+  if (gitAvailabilityPromise) {
+    return gitAvailabilityPromise;
   }
+
+  gitAvailabilityPromise = (async () => {
+    try {
+      const result = await runCommandWithTimeout(["git", "--version"], { timeoutMs: 2_000 });
+      return result.code === 0;
+    } catch {
+      return false;
+    }
+  })();
+
+  return gitAvailabilityPromise;
 }
 
 async function ensureGitRepo(dir: string, isBrandNewWorkspace: boolean) {
